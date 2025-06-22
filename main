@@ -1,0 +1,119 @@
+from flask import Flask
+from threading import Thread
+import os
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler
+
+# ========== Flask (для UptimeRobot) ==========
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Я жив!"
+
+def run_flask():
+    app.run(host='0.0.0.0', port=5000)
+
+def keep_alive():
+    t = Thread(target=run_flask)
+    t.start()
+
+# ========== Telegram Bot ==========
+OWNER_ID = 1961003373
+ASK_NAME, ASK_AGE, ASK_CITY, ASK_PHOTO = range(4)
+user_names = {}
+user_registration_data = {}
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("Привет! Введите ваше *имя и фамилию*:", parse_mode="Markdown")
+    return ASK_NAME
+
+async def ask_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["name"] = update.message.text
+    await update.message.reply_text("Теперь введите ваш *возраст*:", parse_mode="Markdown")
+    return ASK_AGE
+
+async def ask_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["age"] = update.message.text
+    await update.message.reply_text("Укажите ваш *город*:", parse_mode="Markdown")
+    return ASK_CITY
+
+async def ask_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["city"] = update.message.text
+    await update.message.reply_text(
+        "Теперь отправьте документ (фото):",
+        parse_mode="Markdown"
+    )
+    return ASK_PHOTO
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.message.from_user.id
+    photo_file_id = update.message.photo[-1].file_id
+    user_data = context.user_data
+
+    user_names[user_id] = user_data.get("name")
+    user_registration_data[user_id] = user_data
+
+    caption = (
+        f"Документ от {update.message.from_user.full_name}\n\n"
+        f"Имя: {user_data.get('name')}\n"
+        f"Возраст: {user_data.get('age')}\n"
+        f"Город: {user_data.get('city')}"
+    )
+
+    keyboard = [
+        [InlineKeyboardButton("Одобрить", callback_data=f"approve_{user_id}"),
+         InlineKeyboardButton("Отклонить", callback_data=f"decline_{user_id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await context.bot.send_photo(chat_id=OWNER_ID, photo=photo_file_id, caption=caption, reply_markup=reply_markup)
+
+    await update.message.reply_text("Документ получен. Ожидайте ответа.")
+    return ConversationHandler.END
+
+async def approve_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = int(update.callback_query.data.split("_")[1])
+    await context.bot.send_message(user_id, "Регистрация одобрена!")
+    await update.callback_query.answer()
+    await update.callback_query.message.edit_text("✅ Одобрено")
+
+async def decline_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = int(update.callback_query.data.split("_")[1])
+    await context.bot.send_message(user_id, "Регистрация отклонена. Повторите позже.")
+    await update.callback_query.answer()
+    await update.callback_query.message.edit_text("❌ Отклонено")
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Регистрация отменена.")
+    return ConversationHandler.END
+
+def main():
+    keep_alive()
+
+    TOKEN = os.getenv("TOKEN")
+    if not TOKEN:
+        raise ValueError("❌ Установи переменную окружения TOKEN в Replit!")
+
+    app_bot = Application.builder().token(TOKEN).build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            ASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_name)],
+            ASK_AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_age)],
+            ASK_CITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_city)],
+            ASK_PHOTO: [MessageHandler(filters.PHOTO, handle_photo)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    app_bot.add_handler(conv_handler)
+    app_bot.add_handler(CallbackQueryHandler(approve_registration, pattern=r"^approve_"))
+    app_bot.add_handler(CallbackQueryHandler(decline_registration, pattern=r"^decline_"))
+
+    print("✅ Бот запущен...")
+    app_bot.run_polling()
+
+if __name__ == "__main__":
+    main()
